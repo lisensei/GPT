@@ -1,12 +1,13 @@
 import torch
 import torch.nn as nn
+import sys
+import logging
+import os
 from argparse import ArgumentParser
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
-import sys
 from utils import *
-import logging
-import os
+from tqdm import tqdm
 parser = ArgumentParser()
 parser.add_argument("-epochs", type=int, default=100)
 parser.add_argument("-learning_rate", type=float, default=1e-3)
@@ -19,6 +20,7 @@ parser.add_argument("-doc_path", type=str, default="assets/source.txt")
 parser.add_argument("-log_root", type=str, default="run")
 parser.add_argument("-print_frequency", type=int, default=10)
 parser.add_argument("-training_percentage", type=float, default=0.95)
+parser.add_argument("-manual_seed", type=int, default=424242)
 args = parser.parse_args()
 
 
@@ -70,13 +72,14 @@ class GPT(nn.Module):
             else:
                 x = target
             target_mask = nn.Transformer.generate_square_subsequent_mask(
-                x.size(1)).expand(x.size(0)*args.num_heads, -1, -1)
+                x.size(1)).expand(x.size(0)*args.num_heads, -1, -1).to(device)
             out = self.forward(x, target_mask)
             pred = torch.argmax(out, dim=2)
             target = torch.cat([target, pred], dim=1)
         return target
 
 
+torch.manual_seed(args.manual_seed)
 dataset = []
 with open(args.doc_path, "r", encoding="utf-8") as f:
     for line in f:
@@ -123,7 +126,7 @@ logger.info(
     f"number of parameters {num_parameters}\nnumber of batches: {num_batches}")
 logger.info(
     f"training set size: {len(training_set)}; validation set size: {len(validation_set)}")
-for e in range(args.epochs):
+for e in tqdm(range(args.epochs)):
     epoch_loss = 0
     model.train()
     for i in range(num_batches):
@@ -145,9 +148,11 @@ for e in range(args.epochs):
     normalized_valid_loss = validate(model, validation_set, loss_function,
                                      args.memory_length, args.batch_size, DEVICE)
 
-    writer.add_scalar(normalized_training_loss)
-    writer.add_scalar(normalized_valid_loss)
+    writer.add_scalar("training loss", normalized_training_loss, e)
+    writer.add_scalar("validation loss", normalized_valid_loss, e)
     indices = model.generate(tokens_to_indices(
         list("I need another story"), vocab), DEVICE)
-logger.info(''.join(indices_to_tokens(
-    indices.reshape(-1).cpu().tolist(), vocab)))
+    logger.info(f"epoch: {e}; generation:\n")
+    logger.info(''.join(indices_to_tokens(
+        indices.reshape(-1).cpu().tolist(), vocab)))
+    torch.save(model, f"{args.log_root}/{run_name}/model.pth")
