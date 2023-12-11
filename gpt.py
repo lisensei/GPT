@@ -5,6 +5,8 @@ from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import sys
 from utils import *
+import logging
+import os
 parser = ArgumentParser()
 parser.add_argument("-epochs", type=int, default=100)
 parser.add_argument("-learning_rate", type=float, default=1e-3)
@@ -95,18 +97,31 @@ loss_function = nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), args.learning_rate)
 num_parameters = sum([param.numel() for param in model.parameters()])
 num_batches = dataset_size//args.batch_size
+
+# logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 runt_date = datetime.now().isoformat(timespec="seconds").replace(
     ":", "-" if sys.platform[:3] == "win" else ":")
-writer = SummaryWriter(log_dir=f"{args.log_root}/run-{runt_date}")
+run_name = f"run-{runt_date}"
+writer = SummaryWriter(log_dir=f"{args.log_root}/{run_name}")
+log_file_path = f"{args.log_root}/{run_name}/log.txt"
+if not os.access(log_file_path, os.F_OK):
+    with open(log_file_path, "w") as f:
+        pass
+file_handler = logging.FileHandler(log_file_path)
+logger.addHandler(file_handler)
+
+
 print_interval = num_batches//args.print_frequency if num_batches//args.print_frequency != 0 else 1
 num_training_samples = int(len(index_set)*args.training_percentage)
 training_set, validation_set = index_set[:
                                          num_training_samples], index_set[num_training_samples:]
 for k, v in args.__dict__.items():
-    print(f"{k} : {v}")
-print(
+    logger.info(f"{k} : {v}")
+logger.info(
     f"number of parameters {num_parameters}\nnumber of batches: {num_batches}")
-print(
+logger.info(
     f"training set size: {len(training_set)}; validation set size: {len(validation_set)}")
 for e in range(args.epochs):
     epoch_loss = 0
@@ -125,7 +140,7 @@ for e in range(args.epochs):
         loss.backward()
         optimizer.step()
         if i % print_interval == 0:
-            print(f"epoch:{e} iteration: {i}")
+            logger.info(f"epoch:{e} iteration: {i}")
     normalized_training_loss = epoch_loss/num_batches
     normalized_valid_loss = validate(model, validation_set, loss_function,
                                      args.memory_length, args.batch_size, DEVICE)
@@ -134,4 +149,5 @@ for e in range(args.epochs):
     writer.add_scalar(normalized_valid_loss)
     indices = model.generate(tokens_to_indices(
         list("I need another story"), vocab), DEVICE)
-print(''.join(indices_to_tokens(indices.reshape(-1).cpu().tolist(), vocab)))
+logger.info(''.join(indices_to_tokens(
+    indices.reshape(-1).cpu().tolist(), vocab)))
