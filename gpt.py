@@ -21,6 +21,7 @@ parser.add_argument("-log_root", type=str, default="run")
 parser.add_argument("-print_frequency", type=int, default=10)
 parser.add_argument("-training_percentage", type=float, default=0.95)
 parser.add_argument("-manual_seed", type=int, default=424242)
+parser.add_argument("-topk", type=int, default=3)
 args = parser.parse_args()
 
 
@@ -62,7 +63,7 @@ class GPT(nn.Module):
         return out
 
     @torch.no_grad()
-    def generate(self, target, device, max_length=1000):
+    def generate(self, target, device, max_length=1000, topk=3):
         self.eval()
         if not isinstance(target, torch.Tensor):
             target = torch.tensor(target, device=device).reshape(1, -1)
@@ -74,8 +75,11 @@ class GPT(nn.Module):
             target_mask = nn.Transformer.generate_square_subsequent_mask(
                 x.size(1)).expand(x.size(0)*args.num_heads, -1, -1).to(device)
             out = self.forward(x, target_mask)
-            pred = torch.argmax(out, dim=2)
-            target = torch.cat([target, pred], dim=1)
+            pred = torch.softmax(out, dim=2).squeeze(0)[-1:, :]
+            dist, indices = torch.topk(pred, topk)
+            outcome = torch.multinomial(dist, 1).item()
+            index = indices[:, outcome:outcome+1]
+            target = torch.cat([target, index], dim=1)
         return target
 
 
