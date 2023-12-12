@@ -10,14 +10,16 @@ from utils import *
 from tqdm import tqdm
 parser = ArgumentParser()
 parser.add_argument("-epochs", type=int, default=100)
-parser.add_argument("-learning_rate", type=float, default=1e-3)
+parser.add_argument("-learning_rate", type=float, default=5e-4)
 parser.add_argument("-batch_size", type=int, default=32)
-parser.add_argument("-dim_model", type=int, default=128)
+parser.add_argument("-dim_model", type=int, default=256)
 parser.add_argument("-num_heads", type=int, default=8)
 parser.add_argument("-batch_first", type=int, default=1)
 parser.add_argument("-memory_length", type=int, default=128)
+parser.add_argument("-decoder_backbone", type=int, default=0)
+parser.add_argument("-num_layers", type=int, default=4)
 parser.add_argument("-doc_path", type=str, default="assets/source.txt")
-parser.add_argument("-log_root", type=str, default="run")
+parser.add_argument("-log_root", type=str, default="runs")
 parser.add_argument("-print_frequency", type=int, default=10)
 parser.add_argument("-training_percentage", type=float, default=0.95)
 parser.add_argument("-manual_seed", type=int, default=424242)
@@ -26,28 +28,45 @@ args = parser.parse_args()
 
 
 class GPTLayer(nn.Module):
-    def __init__(self, dim_model, num_heads, batch_first) -> None:
+    def __init__(self, dim_model, num_heads, batch_first, decoder_backbone) -> None:
         super().__init__()
-        self.decoder = nn.TransformerDecoderLayer(
-            dim_model, num_heads, batch_first=batch_first)
+        '''
+        Both torch's transformer encoder and decoer layers can be used as a GPT layer
+        Encoder layer can directly be used since it has no cross attention layer and also accepts attention mask.
+        Using torch's decoder layer as GPT layer requires modification to the cross attention layer
+        '''
+        self.decoder_backbone = decoder_backbone
+        if decoder_backbone:
+            self.layer = nn.TransformerDecoderLayer(
+                dim_model, num_heads, batch_first=batch_first)
+        else:
+            self.layer = nn.TransformerEncoderLayer(
+                dim_model, num_heads, batch_first=batch_first)
 
     def forward(self, x, target_mask, key_padding_mask=None):
-        x = self.decoder.norm2(
-            x+self.decoder._mha_block(x, x, target_mask, key_padding_mask))
-        x = self.decoder.norm1(
-            x+self.decoder._sa_block(x, target_mask, key_padding_mask))
-        x = self.decoder.norm3(x+self.decoder._ff_block(x))
+        #swap the order of self attention and cross attention when forwarding
+        if self.decoder_backbone:
+            x = self.layer.norm2(
+                x+self.layer._mha_block(x, x, target_mask, key_padding_mask))
+            x = self.layer.norm1(
+                x+self.layer._sa_block(x, target_mask, key_padding_mask))
+            x = self.layer.norm3(x+self.layer._ff_block(x))
+        else:
+            return self.layer(x, target_mask, key_padding_mask)
         return x
 
 
 class GPT(nn.Module):
-    def __init__(self, dim_model, num_heads, num_embedings, memory_length, batch_first=True) -> None:
+    def __init__(self, dim_model, num_heads, num_layers, num_embedings, memory_length, decoder_backbone=0, batch_first=True) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.dim = dim_model
         self.embeding = nn.Embedding(num_embedings, dim_model)
         self.position_embedding = nn.Embedding(memory_length, dim_model)
-        self.layer = GPTLayer(dim_model, num_heads, batch_first)
+        self.layers = nn.Sequential()
+        for i in range(num_layers):
+            self.layers.add_module(f"layer {i}", GPTLayer(
+                dim_model, num_heads, batch_first, decoder_backbone))
         # self.layer1 = GPTLayer(dim_model, num_heads, batch_first)
         self.fc = nn.Linear(dim_model, num_embedings)
 
@@ -55,11 +74,12 @@ class GPT(nn.Module):
         token_embeddings = self.embeding(x)
         position_embeddings = self.position_embedding(
             torch.arange(x.size(1), device=x.device)).expand_as(token_embeddings)
-        final_embedding = token_embeddings+position_embeddings
-        out = self.layer.forward(
-            final_embedding, target_mask, key_padding_mask)
+        x = token_embeddings+position_embeddings
+        for layer in self.layers:
+            x = layer.forward(
+                x, target_mask, key_padding_mask)
         # out = self.layer1(out, target_mask, key_padding_mask)
-        out = self.fc(out)
+        out = self.fc(x)
         return out
 
     @torch.no_grad()
@@ -96,7 +116,10 @@ index_set = tokens_to_indices(dataset, vocab)
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model = GPT(args.dim_model, args.num_heads, vocab_size, args.memory_length)
+model = GPT(dim_model=args.dim_model, num_heads=args.num_heads,
+            num_layers=args.num_layers, num_embedings=vocab_size,
+            memory_length=args.memory_length, decoder_backbone=args.decoder_backbone,
+            batch_first=args.batch_first)
 model.to(DEVICE)
 
 
